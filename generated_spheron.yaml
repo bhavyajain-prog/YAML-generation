@@ -1,2 +1,10 @@
-Node.js service with auto-scaling and 1 GB of memory.
-...
+services:
+- env: {}
+  name: default-service
+  resources:
+    cpu: 500m
+    memory: 1GB
+  scaling:
+    enabled: false
+    max: 5
+    min: 1

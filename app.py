@@ -2,53 +2,66 @@ from flask import Flask, request, send_file, jsonify
 from transformers import pipeline
 import yaml
 import os
+import re
 
 # Load the NLP model
-generator = pipeline("text2text-generation", model="google/flan-t5-small")
+generator = pipeline("text2text-generation", model="google/flan-t5-large")
 
 app = Flask(__name__)
 
-def parse_natural_language(user_prompt):
+def extract_configuration(user_prompt):
     """
-    Extract structured information from user input.
+    Extract structured YAML from user prompt using the model.
     """
-    system_prompt = f"Extract structured configuration from this: {user_prompt}"
-    result = generator(system_prompt, max_length=200)
-    extracted_text = result[0]['generated_text']
+    # Enhanced system prompt to encourage structured output
+    system_prompt = f"Generate a valid YAML configuration based on the following input: Input: {user_prompt} Make sure the output strictly follows YAML format. Include key-value pairs and proper indentation."
 
-    return extracted_text
+    result = generator(system_prompt, max_length=300)
+
+    extracted_text = result[0]['generated_text']
+    print("Raw model output:\n", extracted_text)
+
+
+
+    try:
+        # Try parsing the generated text as YAML
+        config = yaml.safe_load(extracted_text)
+        return config if isinstance(config, dict) else {}
+    except yaml.YAMLError as e:
+        print(f"YAML Parsing Error: {e}")
+        return {}
 
 def generate_spheron_yaml(user_prompt):
     """
-    Converts structured data into a valid Spheron ICL YAML file.
+    Converts extracted configuration into valid Spheron YAML format.
     """
-    # Extract key values from the user's prompt
-    extracted_text = parse_natural_language(user_prompt)
+    extracted_data = extract_configuration(user_prompt)
 
-    # Define a default YAML structure
+    # Ensure extracted data is not empty before proceeding
+    if not extracted_data:
+        return "Error: Failed to extract valid configuration from the prompt."
+
+    # Ensure the output structure matches Spheron YAML specs
     yaml_data = {
         "services": [
             {
-                "name": "generated-service",
-                "type": "node",  # Default to Node.js (Modify as needed)
+                "name": extracted_data.get("service", "default-service"),
                 "resources": {
-                    "memory": "1GB",
-                    "cpu": "500m"
+                    "memory": extracted_data.get("memory", "1GB"),
+                    "cpu": extracted_data.get("cpu", "500m"),
                 },
                 "scaling": {
-                    "enabled": True,
-                    "min": 1,
-                    "max": 5
+                    "enabled": extracted_data.get("scaling", {}).get("enabled", False),
+                    "min": extracted_data.get("scaling", {}).get("min_instances", 1),
+                    "max": extracted_data.get("scaling", {}).get("max_instances", 5),
                 },
-                "env": [
-                    {"key": "NODE_ENV", "value": "production"}
-                ]
+                "env": extracted_data.get("env", {})
             }
         ]
     }
 
-    # Validate YAML format
     try:
+        # Convert dictionary into YAML format
         yaml_str = yaml.dump(yaml_data, default_flow_style=False)
         return yaml_str
     except yaml.YAMLError as e:
@@ -57,7 +70,14 @@ def generate_spheron_yaml(user_prompt):
 @app.route('/generate_yaml', methods=['POST'])
 def generate_yaml():
     user_prompt = request.json.get("prompt", "")
+    if not user_prompt:
+        return jsonify({"error": "Missing prompt in the request"}), 400
+
     yaml_content = generate_spheron_yaml(user_prompt)
+
+    # Check if the YAML content is an error message
+    if "Error" in yaml_content:
+        return jsonify({"error": yaml_content}), 400
 
     # Save YAML to a file
     file_path = "generated_spheron.yaml"
